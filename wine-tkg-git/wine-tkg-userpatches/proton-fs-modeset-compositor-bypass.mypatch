@@ -1,0 +1,106 @@
+From 096c93a1e24ea084064afa7a719de4da76996cc1 Mon Sep 17 00:00:00 2001
+From: Kai Krakow <kai@kaishome.de>
+Date: Sun, 10 Oct 2021 20:48:24 +0200
+Subject: [PATCH 1/2] winex11.drv: Bypass compositor in fullscreen mode.
+
+Bypass the compositor in fullscreen mode. This reduces stutter
+introduced by window updates in the background and also allows for maybe
+a few more FPS. To not change the visual appearance of the desktop for
+windowed games, this hack only enables itself when the game was switched
+to fullscreen mode, and returns to default WM setting when the game
+leaves fullscreen mode.
+
+Compositors tend to cause severe stutter if the game is GPU-bound.
+
+winex11.drv: Bypass compositor only when a window is full virtual screen.
+
+Bypass compositor only when a window is full virtual screen. Otherwise, it might cause flicking on
+other monitors.
+
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+(cherry picked from commit b5c473f07771ba42bed4d99847888b31b87840b3)
+---
+ dlls/winex11.drv/window.c      | 11 ++++++++++-
+ dlls/winex11.drv/x11drv.h      |  1 +
+ dlls/winex11.drv/x11drv_main.c |  1 +
+ 3 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index d7df0a8519..4b0ff4d2c0 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1332,7 +1332,7 @@ static void update_net_wm_fullscreen_monitors( struct x11drv_win_data *data )
+ 
+ static void window_set_net_wm_state( struct x11drv_win_data *data, UINT new_state )
+ {
+-    UINT i, count, old_state = data->pending_state.net_wm_state;
++    UINT i, count, old_state = data->pending_state.net_wm_state, net_wm_bypass_compositor = 0;
+ 
+     new_state &= x11drv_init_thread_data()->net_wm_state_mask;
+     data->desired_state.net_wm_state = new_state;
+@@ -1400,6 +1400,15 @@ static void window_set_net_wm_state( struct x11drv_win_data *data, UINT new_stat
+                         SubstructureRedirectMask | SubstructureNotifyMask, &xev );
+         }
+     }
++
++    if (new_state & (1 << NET_WM_STATE_FULLSCREEN))
++    {
++        RECT virtual_screen = NtUserGetVirtualScreenRect( MDT_RAW_DPI );
++        net_wm_bypass_compositor = EqualRect( &data->rects.visible, &virtual_screen );
++    }
++
++    XChangeProperty( data->display, data->whole_window, x11drv_atom(_NET_WM_BYPASS_COMPOSITOR), XA_CARDINAL,
++                     32, PropModeReplace, (unsigned char *)&net_wm_bypass_compositor, 1 );
+ }
+ 
+ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL above )
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 22462df605..d2a79aa2b6 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -533,6 +533,7 @@ enum x11drv_atoms
+     XATOM__NET_SYSTEM_TRAY_OPCODE,
+     XATOM__NET_SYSTEM_TRAY_S0,
+     XATOM__NET_SYSTEM_TRAY_VISUAL,
++    XATOM__NET_WM_BYPASS_COMPOSITOR,
+     XATOM__NET_WM_FULLSCREEN_MONITORS,
+     XATOM__NET_WM_ICON,
+     XATOM__NET_WM_MOVERESIZE,
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index b14d4d1af6..18f78e6cda 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -136,6 +136,7 @@ const char * const X11DRV_atom_names[NB_XATOMS - FIRST_XATOM] =
+     "_NET_SYSTEM_TRAY_OPCODE",
+     "_NET_SYSTEM_TRAY_S0",
+     "_NET_SYSTEM_TRAY_VISUAL",
++    "_NET_WM_BYPASS_COMPOSITOR",
+     "_NET_WM_FULLSCREEN_MONITORS",
+     "_NET_WM_ICON",
+     "_NET_WM_MOVERESIZE",
+
+From 1921d1e160cd41eabdc8dcdb4f3b953219843dd5 Mon Sep 17 00:00:00 2001
+From: x <a@b.c>
+Date: Mon, 26 Oct 2026 22:16:16 +0000
+Subject: [PATCH 2/2] win32u: Emulate display mode setting by default.
+
+Proton enables display mode emulation by default, so that games can
+change the resolution in fullscreen without changing the desktop one.
+The EmulateModeset registry option can still be used (set to N) to opt out.
+---
+ dlls/win32u/sysparams.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 2c890be87d..b20ed50904 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -165,7 +165,7 @@ static INT64 last_query_display_time;
+ static UINT64 monitor_update_serial;
+ static pthread_mutex_t display_lock = PTHREAD_MUTEX_INITIALIZER;
+ 
+-BOOL emulate_modeset = FALSE;
++BOOL emulate_modeset = TRUE;
+ BOOL decorated_mode = TRUE;
+ UINT64 thunk_lock_callback = 0;
+ 
